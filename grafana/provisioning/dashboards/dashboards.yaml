@@ -1,0 +1,12 @@
+# Dashboards are loaded from JSON files in grafana/dashboards/ (subdirectories = Grafana folders).
+# UI edits don't survive re-provisioning: to keep them, Export -> JSON -> commit the file.
+apiVersion: 1
+
+providers:
+  - name: files
+    type: file
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

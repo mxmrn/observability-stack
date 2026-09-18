@@ -1,0 +1,75 @@
+# Datasources as code. Fixed uids let dashboards and cross-datasource links
+# (metric -> trace -> log) reference them reliably on any machine.
+# `$$` is an escape: otherwise Grafana would substitute an environment variable.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      # Exemplar point on a latency graph -> "open trace in Tempo" button.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      streamingEnabled: { search: true, metrics: true }
+      nodeGraph: { enabled: true }
+      serviceMap: { datasourceUid: prometheus } # Service Graph from traces_service_graph_*
+      search: { hide: false }
+      # Span -> this service's logs in Loki around the same time, filtered by trace_id.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        tags:
+          - { key: service.namespace, value: project }
+          - { key: service.name, value: service }
+      # Span -> this service's RED metrics.
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -10m
+        spanEndTimeShift: 10m
+        tags:
+          - { key: service.name, value: service }
+        queries:
+          - name: RPS
+            query: sum(rate(traces_spanmetrics_calls_total{$$__tags}[1m]))
+          - name: p99 latency
+            query: histogram_quantile(0.99, sum by (le) (rate(traces_spanmetrics_latency_bucket{$$__tags}[1m])))
+
+  - name: Loki
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      # Log line -> trace: via the trace_id structured metadata (Alloy/OTLP)...
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Open trace
+        # ...or via the line text, if the trace_id is only there.
+        - name: trace_id_text
+          matcherRegex: '"?trace_?[iI][dD]"?\s*[:=]\s*"?([0-9a-f]{32})'
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Open trace

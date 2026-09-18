@@ -1,0 +1,106 @@
+{
+  "uid": "services-red",
+  "title": "Services (RED)",
+  "description": "RED metrics for any service that sends traces. Source: Tempo metrics-generator (traces_spanmetrics_*).",
+  "tags": ["red", "traces"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "project", "label": "Project", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(traces_spanmetrics_calls_total, project)", "refId": "v" },
+        "refresh": 2, "multi": true, "includeAll": true, "allValue": ".+", "sort": 1,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "service", "label": "Service", "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(traces_spanmetrics_calls_total{project=~\"$project\"}, service)", "refId": "v" },
+        "refresh": 2, "multi": true, "includeAll": true, "allValue": ".+", "sort": 1,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "kind", "label": "Span kind", "type": "custom",
+        "description": "Inbound requests (SERVER, CONSUMER) are the service's RED. CLIENT/PRODUCER are its outbound calls.",
+        "query": "SPAN_KIND_(SERVER|CONSUMER) : inbound,SPAN_KIND_(CLIENT|PRODUCER) : outbound,SPAN_KIND_.* : all",
+        "current": { "text": "inbound", "value": "SPAN_KIND_(SERVER|CONSUMER)" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Rate (RPS)", "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{
+        "refId": "A", "legendFormat": "{{project}}/{{service}}",
+        "expr": "sum by (project, service) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[$__rate_interval]))"
+      }]
+    },
+    {
+      "type": "timeseries", "title": "Errors (%)", "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "custom": { "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] }
+        }, "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{
+        "refId": "A", "legendFormat": "{{project}}/{{service}}",
+        "expr": "sum by (project, service) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\", status_code=\"STATUS_CODE_ERROR\"}[$__rate_interval]))\n/ sum by (project, service) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[$__rate_interval]))"
+      }]
+    },
+    {
+      "type": "timeseries", "title": "Duration p50 / p95 / p99 (dots are exemplars -> trace)", "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50 {{service}}", "exemplar": false,
+          "expr": "histogram_quantile(0.50, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[$__rate_interval])))" },
+        { "refId": "B", "legendFormat": "p95 {{service}}", "exemplar": false,
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[$__rate_interval])))" },
+        { "refId": "C", "legendFormat": "p99 {{service}}", "exemplar": true,
+          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(traces_spanmetrics_latency_bucket{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[$__rate_interval])))" }
+      ]
+    },
+    {
+      "type": "table", "title": "Operations (span name): RPS, errors, p99", "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {}, "overrides": [
+          { "matcher": { "id": "byName", "options": "Value #A" }, "properties": [{ "id": "displayName", "value": "RPS" }, { "id": "unit", "value": "reqps" }, { "id": "decimals", "value": 1 }] },
+          { "matcher": { "id": "byName", "options": "Value #B" }, "properties": [{ "id": "displayName", "value": "Errors" }, { "id": "unit", "value": "percentunit" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+            { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }] } }] },
+          { "matcher": { "id": "byName", "options": "Value #C" }, "properties": [{ "id": "displayName", "value": "p99" }, { "id": "unit", "value": "s" }] }
+        ]
+      },
+      "options": { "sortBy": [{ "displayName": "RPS", "desc": true }] },
+      "transformations": [
+        { "id": "merge" },
+        { "id": "organize", "options": { "excludeByName": { "Time": true } } }
+      ],
+      "targets": [
+        { "refId": "A", "format": "table", "instant": true,
+          "expr": "sum by (service, span_name) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[5m]))" },
+        { "refId": "B", "format": "table", "instant": true,
+          "expr": "sum by (service, span_name) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\", status_code=\"STATUS_CODE_ERROR\"}[5m])) / sum by (service, span_name) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[5m])) or sum by (service, span_name) (rate(traces_spanmetrics_calls_total{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[5m])) * 0" },
+        { "refId": "C", "format": "table", "instant": true,
+          "expr": "histogram_quantile(0.99, sum by (le, service, span_name) (rate(traces_spanmetrics_latency_bucket{project=~\"$project\", service=~\"$service\", span_kind=~\"$kind\"}[5m])))" }
+      ]
+    },
+    {
+      "type": "logs", "title": "Service logs (lines with trace_id get an \"Open trace\" link)", "gridPos": { "x": 0, "y": 16, "w": 24, "h": 10 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "expr": "{project=~\"$project\", service=~\"$service\"}" }]
+    }
+  ]
+}

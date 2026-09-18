@@ -1,0 +1,97 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# OTLP metrics ingestion (from the OTel Collector).
+otlp:
+  # Resource attributes promoted to regular labels on every series.
+  # The rest are available via a join with target_info.
+  promote_resource_attributes: [project, service, deployment.environment]
+
+storage:
+  tsdb:
+    # Push sources (OTLP, remote_write) may deliver samples slightly out of order.
+    out_of_order_time_window: 30m
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # Auto-discovery: any container on the `observability` network with labels
+  #   observability.scrape: "true"
+  #   observability.port:   "8080"
+  #   observability.path:   "/metrics"   (optional)
+  #   observability.interval: "5s"       (optional)
+  # ---------------------------------------------------------------------------
+  - job_name: docker
+    docker_sd_configs:
+      - host: tcp://docker-proxy:2375
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["observability.scrape=true"]
+    relabel_configs:
+      # docker_sd emits one target per container network: keep the address on ours.
+      - source_labels: [__meta_docker_network_name]
+        regex: observability
+        action: keep
+      # No port, nothing to scrape.
+      - source_labels: [__meta_docker_container_label_observability_port]
+        regex: ""
+        action: drop
+      - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_observability_port]
+        regex: (.+);(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_docker_container_label_observability_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      - source_labels: [__meta_docker_container_label_observability_interval]
+        regex: (.+)
+        target_label: __scrape_interval__
+
+      # project/service: taken from the labels docker compose sets automatically;
+      # explicit observability.project / observability.service override them.
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: project
+      - source_labels: [__meta_docker_container_label_observability_project]
+        regex: (.+)
+        target_label: project
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+      - source_labels: [__meta_docker_container_label_observability_service]
+        regex: (.+)
+        target_label: service
+
+      # job = project/service (same as OTLP metrics: service.namespace/service.name),
+      # instance = container name, so replicas are distinguishable and readable.
+      - source_labels: [project, service]
+        separator: /
+        target_label: job
+      - source_labels: [__meta_docker_container_name]
+        regex: /?(.+)
+        target_label: instance
+
+  # Resources of all containers. These metrics describe *other* containers,
+  # so project/service come from the metric's own labels, not the target's.
+  - job_name: cadvisor
+    scrape_interval: 10s
+    static_configs:
+      - targets: [cadvisor:8080]
+        labels: { project: observability, service: cadvisor }
+    metric_relabel_configs:
+      - source_labels: [container_label_com_docker_compose_project]
+        regex: (.+)
+        target_label: project
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: (.+)
+        target_label: service
+      - regex: container_label_com_docker_compose_(project|service)
+        action: labeldrop
+
+  # Host CPU, memory, disk: the main signal for "we hit the laptop's limit, not the service's".
+  - job_name: node
+    static_configs:
+      - targets: [node-exporter:9100]
+        labels: { project: observability, service: node-exporter }

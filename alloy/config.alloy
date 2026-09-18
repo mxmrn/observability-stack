@@ -1,0 +1,73 @@
+// Alloy: stdout/stderr of containers on the `observability` network -> Loki.
+// The config is a graph of components: one component's output feeds the next one's input.
+
+// 1. Discover containers (via the read-only Docker API proxy).
+discovery.docker "containers" {
+  host             = "tcp://docker-proxy:2375"
+  refresh_interval = "10s"
+  filter {
+    name   = "network"
+    values = ["observability"]
+  }
+}
+
+// 2. Turn Docker metadata into log stream labels (like relabel_configs in Prometheus).
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Opt out of log collection with the label observability.logs: "false"
+  rule {
+    source_labels = ["__meta_docker_container_label_observability_logs"]
+    regex         = "false"
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/?(.+)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_observability_project"]
+    regex         = "(.+)"
+    target_label  = "project"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_observability_service"]
+    regex         = "(.+)"
+    target_label  = "service"
+  }
+}
+
+// 3. Tail container logs.
+loki.source.docker "containers" {
+  host       = "tcp://docker-proxy:2375"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.containers.receiver]
+}
+
+// 4. If a line is JSON with a trace_id, store it as structured metadata,
+//    so Grafana can jump from the log line to the trace in Tempo.
+//    Non-JSON lines pass through unchanged.
+loki.process "containers" {
+  stage.json {
+    expressions = { trace_id = "trace_id || traceId || traceID" }
+  }
+  stage.structured_metadata {
+    values = { trace_id = "" }
+  }
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

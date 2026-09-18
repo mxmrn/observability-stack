@@ -1,0 +1,60 @@
+# Template: how to connect a project's services to the observability stack.
+# Copy the relevant parts into your project's compose.yml.
+# The stack must be running first: docker compose -f ../observability/compose.yml up -d
+
+name: myproject # becomes the `project` label for pulled metrics and logs (via com.docker.compose.project)
+
+x-otel-env: &otel-env
+  # Where to send traces/metrics/logs over OTLP. The name resolves inside the observability network.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  # service.namespace must match `name:` above, so OTLP data and pulled metrics
+  # share the same `project` label. service.name is set per service (OTEL_SERVICE_NAME).
+  # IMPORTANT for replicas: in code, add service.instance.id = os.Hostname() to the resource
+  # (in Docker that's the container id), otherwise OTLP metrics of replicas collapse into one series.
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=myproject,deployment.environment=local
+  # Share of traces to keep. Keeping 100% under load is expensive; see tail sampling (4.1).
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
+
+services:
+  api:
+    build: .
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: api
+    labels:
+      observability.scrape: "true" # Prometheus: scrape this container
+      observability.port: "8080" #    port serving /metrics
+      # observability.path: "/metrics"    # if the path differs
+      # observability.interval: "5s"      # more often than the 15s default (for load tests)
+      # observability.logs: "false"       # don't ship stdout to Loki
+    deploy:
+      replicas: 2 # each replica is a separate target with instance=<container name>
+      resources:
+        limits: { cpus: "2", memory: 512M } # real cgroup limits: OOMKill and throttling just like in k8s
+    networks: [default, observability]
+
+  postgres:
+    image: postgres:17
+    # Doesn't serve /metrics itself; databases get a separate exporter (postgres_exporter) with the labels above.
+    networks: [default] # not on observability: no logs needed, metrics come via the exporter
+
+  # Load: docker compose --profile load run --rm k6 run /scripts/load.js
+  # k6 metrics (what the client saw) land in the same Prometheus; compare them with server-side ones.
+  k6:
+    image: grafana/k6:latest
+    profiles: [load]
+    volumes: [./load:/scripts:ro]
+    environment:
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_STATS: p(50),p(95),p(99),max
+      K6_OUT: experimental-prometheus-rw
+    deploy:
+      resources:
+        limits: { cpus: "2" } # limit the load generator too, so it doesn't starve the service
+    networks: [default, observability]
+
+networks:
+  observability:
+    external: true # the stack creates the network; the project only joins it

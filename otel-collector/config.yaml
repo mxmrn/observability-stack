@@ -1,0 +1,64 @@
+# OTel Collector: the single entry point for telemetry.
+# Pipeline: receivers -> processors -> exporters, separately for traces / metrics / logs.
+
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+processors:
+  # First in the chain: when the collector approaches the container memory limit
+  # it starts refusing data instead of getting OOM-killed.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Convention: service.namespace = project, service.name = service.
+  # Copy them into short project/service attributes: the same label names
+  # Prometheus and Alloy set for pulled metrics and stdout logs.
+  resource/labels:
+    attributes:
+      - { key: project, from_attribute: service.namespace, action: insert }
+      - { key: service, from_attribute: service.name, action: insert }
+
+  # Buffer and send in batches: fewer requests to the backends.
+  batch:
+    send_batch_size: 8192
+    timeout: 2s
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  otlphttp/prometheus: # native OTLP receiver of Prometheus 3 (--web.enable-otlp-receiver)
+    endpoint: http://prometheus:9090/api/v1/otlp
+  otlphttp/loki: # native OTLP receiver of Loki 3
+    endpoint: http://loki:3100/otlp
+
+extensions:
+  health_check: { endpoint: 0.0.0.0:13133 }
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/labels, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/labels, batch]
+      exporters: [otlphttp/prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/labels, batch]
+      exporters: [otlphttp/loki]
+  telemetry:
+    # The collector's own metrics (accepted/refused spans etc.), scraped by Prometheus.
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus: { host: 0.0.0.0, port: 8888 }

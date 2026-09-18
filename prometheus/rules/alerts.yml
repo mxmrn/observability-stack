@@ -1,0 +1,58 @@
+# Baseline alerts. Visible in Prometheus (/alerts) and Grafana -> Alerting.
+# Notification routing (Alertmanager) comes with the SLO iteration (4.2).
+groups:
+  - name: targets
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} ({{ $labels.instance }}) is failing scrapes"
+
+  - name: load-test-validity
+    rules:
+      # When the host is saturated, load test results show the laptop's limit, not the service's.
+      - alert: HostCPUSaturated
+        expr: (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[1m]))) > 0.9
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Host CPU > 90%: load test measurements are unreliable"
+      - alert: ObservabilityStackHeavy
+        expr: sum(rate(container_cpu_usage_seconds_total{project="observability"}[1m])) > 2
+        for: 2m
+        labels: { severity: info }
+        annotations:
+          summary: "Observability stack uses > 2 cores and competes with the services under test"
+
+  - name: containers
+    rules:
+      - alert: ContainerCPUThrottled
+        expr: |
+          sum by (project, service, name) (rate(container_cpu_cfs_throttled_periods_total[1m]))
+            / sum by (project, service, name) (rate(container_cpu_cfs_periods_total[1m])) > 0.25
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.name }}: throttled in {{ $value | humanizePercentage }} of CFS periods"
+      - alert: ContainerMemoryNearLimit
+        expr: |
+          container_memory_working_set_bytes
+            / (container_spec_memory_limit_bytes > 0) > 0.9
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.name }}: memory > 90% of limit, close to OOMKill"
+
+  # RED from trace data (Tempo metrics-generator); works for any instrumented service.
+  - name: services
+    rules:
+      - alert: ServiceHighErrorRate
+        expr: |
+          sum by (project, service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_(SERVER|CONSUMER)", status_code="STATUS_CODE_ERROR"}[2m]))
+            / sum by (project, service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_(SERVER|CONSUMER)"}[2m])) > 0.05
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: {{ $value | humanizePercentage }} errors"

@@ -1,0 +1,49 @@
+# Loki in monolithic mode: one process, chunks and index on local disk.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore: { store: inmemory }
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index: { prefix: index_, period: 24h }
+
+limits_config:
+  retention_period: 72h
+  allow_structured_metadata: true
+  volume_enabled: true
+  # OTLP logs: which resource attributes become index (stream) labels.
+  # Same project/service that Alloy sets on stdout logs. Everything else goes to structured metadata.
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes: [project, service]
+
+# The compactor deletes data older than retention_period.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+pattern_ingester:
+  enabled: true # Patterns tab in Grafana Logs Drilldown
+
+analytics:
+  reporting_enabled: false
