@@ -554,6 +554,139 @@
           "expr": "node_ws_subscriptions{project=\"stand\"} > 0"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider: compute units and refusals",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 7
+      },
+      "description": "What the external provider charges us per second, by method, against what is left of the budget. Refusals are split by reason: throughput means slow down, budget means stop and degrade, range means the query was too wide to ever be served.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "budget left"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "refused.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "CU/s {{method}}",
+          "expr": "sum by (method) (rate(provider_compute_units_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "refused {{reason}}",
+          "expr": "sum by (reason) (rate(provider_rejected_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "budget left",
+          "expr": "provider_budget_remaining{project=\"stand\"}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Bytes on the wire, per proxy",
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Measured by toxiproxy in the middle, so it belongs to neither side. A bandwidth toxic shows up here as a flat ceiling while both the node and the client still think they are fast.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{proxy}} {{direction}}",
+          "expr": "sum by (proxy, direction) (rate(toxiproxy_proxy_sent_bytes_total[$__rate_interval]))"
+        }
+      ]
     }
   ],
   "annotations": {
