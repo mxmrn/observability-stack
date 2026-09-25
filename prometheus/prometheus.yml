@@ -50,6 +50,10 @@ scrape_configs:
       - source_labels: [__meta_docker_container_label_observability_interval]
         regex: (.+)
         target_label: __scrape_interval__
+      # The timeout may not exceed the interval (default timeout is 10s), or the target is rejected.
+      - source_labels: [__meta_docker_container_label_observability_interval]
+        regex: (.+)
+        target_label: __scrape_timeout__
 
       # project/service: taken from the labels docker compose sets automatically;
       # explicit observability.project / observability.service override them.

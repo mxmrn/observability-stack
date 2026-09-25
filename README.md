@@ -133,6 +133,11 @@ To keep them: Share → Export → JSON → put the file into `grafana/dashboard
   Tempo 3: the backend worker polls the compaction scheduler and there is no work.
 - **Docker Desktop (macOS/Windows):** cAdvisor and node-exporter show the resources of Docker's Linux VM,
   not of the machine itself. Everything else works the same.
+- **Config edits not picked up / "no such file" on reload:** bind mounts point at the directory that existed
+  when the container started. If this directory was deleted and re-created (re-clone, move, some git operations),
+  running containers see an empty old copy. Fix: `docker compose up -d --force-recreate` (data in volumes is kept).
+- **A target silently missing from Prometheus:** check Status → Targets and `docker compose logs prometheus`.
+  Relabeling errors (e.g. a scrape timeout larger than the interval) are only logged, the target is just not created.
 
 ## Next: Kubernetes (kind)
 

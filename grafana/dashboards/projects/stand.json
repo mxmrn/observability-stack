@@ -1,0 +1,98 @@
+{
+  "uid": "stand-nodes",
+  "title": "Stand: fake EVM nodes",
+  "description": "The fake nodes of the stand project: where their chain head is, what they answer and how fast.",
+  "tags": ["stand"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Blocks behind the network head", "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "description": "A node can be perfectly healthy and still serve data minutes old. This is the failure a gateway that only watches error rates never notices.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{service}}",
+        "expr": "scalar(max(node_head_block{project=\"stand\"})) - node_head_block{project=\"stand\"}" }]
+    },
+    {
+      "type": "timeseries", "title": "Answers by outcome", "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "description": "ok, not_synced (block not here yet), unknown_block, unknown_method, and the chaos verdicts: failed, rate_limited, overloaded, hang.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 40, "stacking": { "mode": "normal" } } }, "overrides": [
+        { "matcher": { "id": "byRegexp", "options": ".*ok.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+        { "matcher": { "id": "byRegexp", "options": ".*failed.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+        { "matcher": { "id": "byRegexp", "options": ".*rate_limited.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+      ] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{service}} {{outcome}}",
+        "expr": "sum by (service, outcome) (rate(node_rpc_requests_total{project=\"stand\"}[$__rate_interval]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Latency by method (p99 dots are exemplars: click -> trace)", "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "description": "Replayed from what the recorder measured against a real provider, minus the round trip to it.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50 {{method}}", "exemplar": false,
+          "expr": "histogram_quantile(0.5, sum by (le, method) (rate(node_rpc_duration_seconds_bucket{project=\"stand\"}[$__rate_interval])))" },
+        { "refId": "B", "legendFormat": "p99 {{method}}", "exemplar": true,
+          "expr": "histogram_quantile(0.99, sum by (le, method) (rate(node_rpc_duration_seconds_bucket{project=\"stand\"}[$__rate_interval])))" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Bytes written per node", "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "description": "A block with transactions is ~350 KB. At a few hundred RPS this, not the CPU of the handler, is what saturates first.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{service}}",
+        "expr": "sum by (service) (rate(node_rpc_response_bytes_total{project=\"stand\"}[$__rate_interval]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Requests in flight", "gridPos": { "x": 0, "y": 16, "w": 8, "h": 7 },
+      "description": "Rises when the node is slower than the arrival rate. With max_concurrency set, requests above this line get 503.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{service}}", "expr": "node_inflight_requests{project=\"stand\"}" }]
+    },
+    {
+      "type": "timeseries", "title": "Calls per HTTP request", "gridPos": { "x": 8, "y": 16, "w": 8, "h": 7 },
+      "description": "Batching hides many calls behind one connection: one request can cost the node a hundred lookups.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "avg {{service}}",
+          "expr": "sum by (service) (rate(node_rpc_batch_size_sum{project=\"stand\"}[$__rate_interval])) / sum by (service) (rate(node_rpc_batch_size_count{project=\"stand\"}[$__rate_interval]))" },
+        { "refId": "B", "legendFormat": "p99 {{service}}",
+          "expr": "histogram_quantile(0.99, sum by (le, service) (rate(node_rpc_batch_size_bucket{project=\"stand\"}[$__rate_interval])))" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Node CPU and memory", "gridPos": { "x": 16, "y": 16, "w": 8, "h": 7 },
+      "description": "Rendering a 350 KB response is real work: this is where it shows up.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [
+        { "matcher": { "id": "byRegexp", "options": "mem.*" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "custom.axisPlacement", "value": "right" }] }
+      ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "cpu {{service}}",
+          "expr": "sum by (service) (rate(container_cpu_usage_seconds_total{project=\"stand\"}[$__rate_interval]))" },
+        { "refId": "B", "legendFormat": "mem {{service}}",
+          "expr": "sum by (service) (container_memory_working_set_bytes{project=\"stand\"})" }
+      ]
+    },
+    {
+      "type": "logs", "title": "Warnings and errors (expand a line -> Open trace)", "gridPos": { "x": 0, "y": 23, "w": 24, "h": 9 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "expr": "{project=\"stand\"} | json | level=~\"WARN|ERROR\"" }]
+    }
+  ]
+}

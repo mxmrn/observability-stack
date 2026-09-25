@@ -1,0 +1,89 @@
+{
+  "uid": "tracing-demo",
+  "title": "Tracing demo: gateway",
+  "description": "Application metrics of the tracing-demo project (pulled from /metrics), k6 client-side view and logs.",
+  "tags": ["tracing-demo"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Gateway responses by HTTP code", "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 40, "stacking": { "mode": "normal" } } }, "overrides": [
+        { "matcher": { "id": "byName", "options": "200" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+        { "matcher": { "id": "byName", "options": "429" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+        { "matcher": { "id": "byName", "options": "502" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+      ] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{code}}",
+        "expr": "sum by (code) (rate(rpc_requests_total{project=\"tracing-demo\"}[$__rate_interval]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Gateway latency by method (p99 dots are exemplars: click -> trace)", "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50 {{method}}", "exemplar": false,
+          "expr": "histogram_quantile(0.5, sum by (le, method) (rate(rpc_request_duration_seconds_bucket{project=\"tracing-demo\", method=~\"eth_.*\"}[$__rate_interval])))" },
+        { "refId": "B", "legendFormat": "p99 {{method}}", "exemplar": true,
+          "expr": "histogram_quantile(0.99, sum by (le, method) (rate(rpc_request_duration_seconds_bucket{project=\"tracing-demo\", method=~\"eth_.*\"}[$__rate_interval])))" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Upstream attempts by node and outcome", "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "description": "timeout = node was slower than UPSTREAM_TIMEOUT; error = node returned 5xx. Both trigger a retry on another node.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{node}} {{outcome}}",
+        "expr": "sum by (node, outcome) (rate(upstream_attempts_total{project=\"tracing-demo\"}[$__rate_interval]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Upstream latency p99 by node (as seen by the gateway)", "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "refId": "A", "legendFormat": "{{node}}",
+        "expr": "histogram_quantile(0.99, sum by (le, node) (rate(upstream_duration_seconds_bucket{project=\"tracing-demo\"}[$__rate_interval])))" }]
+    },
+    {
+      "type": "stat", "title": "Cache hit ratio", "gridPos": { "x": 0, "y": 16, "w": 6, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "options": { "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{ "refId": "A",
+        "expr": "sum(rate(cache_lookups_total{project=\"tracing-demo\", result=\"hit\"}[$__rate_interval])) / sum(rate(cache_lookups_total{project=\"tracing-demo\"}[$__rate_interval]))" }]
+    },
+    {
+      "type": "timeseries", "title": "p99 per method: client (k6) vs server (gateway)", "gridPos": { "x": 6, "y": 16, "w": 10, "h": 6 },
+      "description": "The client also sees network, connection setup and time spent waiting before the handler starts. Normally the lines are close; when the gateway saturates, the client line pulls away.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "legendFormat": "client {{name}}", "expr": "max by (name) (k6_http_req_duration_p99{expected_response=\"true\"})" },
+        { "refId": "B", "legendFormat": "server {{method}}",
+          "expr": "histogram_quantile(0.99, sum by (le, method) (rate(rpc_request_duration_seconds_bucket{project=\"tracing-demo\", method=~\"eth_.*\"}[$__rate_interval])))" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Gateway Go runtime", "gridPos": { "x": 16, "y": 16, "w": 8, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [
+        { "matcher": { "id": "byName", "options": "heap in use" }, "properties": [{ "id": "unit", "value": "bytes" }, { "id": "custom.axisPlacement", "value": "right" }] }
+      ] },
+      "targets": [
+        { "refId": "A", "legendFormat": "goroutines", "expr": "sum(go_goroutines{project=\"tracing-demo\", service=\"gateway\"})" },
+        { "refId": "B", "legendFormat": "heap in use", "expr": "sum(go_memstats_heap_inuse_bytes{project=\"tracing-demo\", service=\"gateway\"})" }
+      ]
+    },
+    {
+      "type": "logs", "title": "Warnings and errors (expand a line -> Open trace)", "gridPos": { "x": 0, "y": 22, "w": 24, "h": 10 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true },
+      "targets": [{ "refId": "A", "expr": "{project=\"tracing-demo\"} | json | level=~\"WARN|ERROR\"" }]
+    }
+  ]
+}
