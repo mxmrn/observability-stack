@@ -415,6 +415,73 @@
           "expr": "{project=\"stand\"} | json | level=~\"WARN|ERROR\""
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Chain branch per node",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 8,
+        "h": 7
+      },
+      "description": "The fork epoch counts how many times this node rewrote its tip. A step means a reorg; nodes with different epochs are on different branches and will disagree about the same block number.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "epoch {{service}}",
+          "expr": "node_fork_epoch{project=\"stand\"}"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "reorgs {{service}}",
+          "expr": "node_reorgs_total{project=\"stand\"}"
+        }
+      ]
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Reorgs",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "iconColor": "red",
+        "expr": "changes(node_fork_epoch{project=\"stand\"}[$__interval]) > 0",
+        "step": "30s",
+        "titleFormat": "reorg on {{service}}",
+        "tagKeys": "service"
+      }
+    ]
+  }
 }

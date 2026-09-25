@@ -32,16 +32,18 @@ scrape_configs:
           - name: label
             values: ["observability.scrape=true"]
     relabel_configs:
-      # docker_sd emits one target per container network: keep the address on ours.
-      - source_labels: [__meta_docker_network_name]
-        regex: observability
-        action: keep
       # No port, nothing to scrape.
       - source_labels: [__meta_docker_container_label_observability_port]
         regex: ""
         action: drop
-      - source_labels: [__meta_docker_network_ip, __meta_docker_container_label_observability_port]
-        regex: (.+);(\d+)
+      # Address the container by name, not by the IP of one of its networks.
+      # docker_sd emits a target per network, and which networks it reports
+      # depends on the container's network mode, so filtering by network name
+      # silently loses containers whose primary network is their own. By name,
+      # every copy of the target is identical and Prometheus collapses them,
+      # while docker's embedded DNS resolves the name on the shared network.
+      - source_labels: [__meta_docker_container_name, __meta_docker_container_label_observability_port]
+        regex: /?(.+);(\d+)
         replacement: $1:$2
         target_label: __address__
       - source_labels: [__meta_docker_container_label_observability_path]
