@@ -687,6 +687,148 @@
           "expr": "sum by (proxy, direction) (rate(toxiproxy_proxy_sent_bytes_total[$__rate_interval]))"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load generator: completed vs dropped",
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Requests k6 completed per second against iterations it had to drop. A dropped iteration means the arrival rate could not be kept up: from that moment the numbers describe the generator or the queue in front of the service, not the service itself. Virtual users on the right axis show the queue piling up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "dropped"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "virtual users"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "completed",
+          "expr": "sum(rate(k6_http_reqs_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "dropped",
+          "expr": "sum(rate(k6_dropped_iterations_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "virtual users",
+          "expr": "max(k6_vus{project=\"stand\"})"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load generator: latency by method, as the client sees it",
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 7
+      },
+      "description": "k6 sends durations to Prometheus in seconds, while its own console summary prints milliseconds - the same run reads 0.78 here and 780ms there. The client also pays for connection setup and for time spent queued before the handler starts, which no server-side metric can see.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p99 {{name}}",
+          "expr": "max by (name) (k6_http_req_duration_p99{project=\"stand\"})"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p50 {{name}}",
+          "expr": "max by (name) (k6_http_req_duration_p50{project=\"stand\"})"
+        }
+      ]
     }
   ],
   "annotations": {
