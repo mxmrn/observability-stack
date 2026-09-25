@@ -465,6 +465,95 @@
           "expr": "node_reorgs_total{project=\"stand\"}"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Subscriptions and what they lose",
+      "gridPos": {
+        "x": 8,
+        "y": 32,
+        "w": 16,
+        "h": 7
+      },
+      "description": "Notifications pushed per second against notifications thrown away because a client could not keep up. Drops are a silent failure: the connection stays open and the client keeps waiting for data that was discarded here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "dropped.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "(connections|subscriptions).*"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{kind}} /s {{service}}",
+          "expr": "sum by (service, kind) (rate(node_ws_notifications_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "dropped /s {{service}}",
+          "expr": "sum by (service) (rate(node_ws_dropped_total{project=\"stand\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "connections {{service}}",
+          "expr": "node_ws_connections{project=\"stand\"}"
+        },
+        {
+          "refId": "D",
+          "legendFormat": "subscriptions {{kind}} {{service}}",
+          "expr": "node_ws_subscriptions{project=\"stand\"} > 0"
+        }
+      ]
     }
   ],
   "annotations": {
