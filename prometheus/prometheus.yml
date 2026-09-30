@@ -87,6 +87,26 @@ scrape_configs:
       - targets: [cadvisor:8080]
         labels: { project: observability, service: cadvisor }
     metric_relabel_configs:
+      # id="/" is the root cgroup: the whole machine, which cAdvisor exports next
+      # to the containers. It carries no compose labels, so nothing overrode the
+      # target's own project=observability below, and every
+      # sum(container_*{project="observability"}) silently became a host-wide
+      # total. The host has its own source (node-exporter); this copy only lies.
+      - source_labels: [__name__, name, id]
+        regex: container_.+;;.+
+        action: drop
+      # Same trap for containers started outside compose (kind nodes, a manual
+      # docker run): with no labels of their own they inherit cAdvisor's. Reset
+      # them first, so an unlabelled container shows up as unlabelled instead of
+      # being counted as part of the observability stack.
+      - source_labels: [__name__, id]
+        regex: container_.+;.+
+        target_label: project
+        replacement: unlabeled
+      - source_labels: [__name__, id]
+        regex: container_.+;.+
+        target_label: service
+        replacement: unlabeled
       - source_labels: [container_label_com_docker_compose_project]
         regex: (.+)
         target_label: project
