@@ -45,14 +45,16 @@ groups:
         annotations:
           summary: "{{ $labels.name }}: memory > 90% of limit, close to OOMKill"
 
-  # RED from trace data (Tempo metrics-generator); works for any instrumented service.
+  # RED from the services' own scraped metrics, normalised in rules/red.yml.
+  # This was built on span metrics until sampling made that untenable: a biased
+  # sampler (keep every error, 1% of the rest) makes the ratio read near 100% on
+  # a healthy service, and a uniform 1% leaves too few spans to tell a 5% error
+  # rate from noise. Scraped counters have neither problem - they count all of it.
   - name: services
     rules:
       - alert: ServiceHighErrorRate
-        expr: |
-          sum by (project, service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_(SERVER|CONSUMER)", status_code="STATUS_CODE_ERROR"}[2m]))
-            / sum by (project, service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_(SERVER|CONSUMER)"}[2m])) > 0.05
+        expr: service:request_errors:rate2m / service:requests:rate2m > 0.05
         for: 2m
         labels: { severity: warning }
         annotations:
-          summary: "{{ $labels.project }}/{{ $labels.service }}: {{ $value | humanizePercentage }} errors"
+          summary: "{{ $labels.project }}/{{ $labels.service }}: {{ $value | humanizePercentage }} of requests failed on the service side"
