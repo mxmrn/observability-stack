@@ -7,6 +7,14 @@
 # A project joins the overview by adding one group here, so its own metric names
 # stay domain-specific (`node_rpc_requests_total`, not a house style).
 #
+# `promtool check rules` reports the repeated record names across groups as a
+# duplicate-rule lint. It compares names and static labels, not the label sets
+# the expressions produce: each group sums by (project, service) over metrics
+# only its own services export, so no two groups ever write the same series. The
+# lint is still worth reading, because if two groups did overlap, Prometheus
+# would write two samples for one series at one timestamp and the graph would
+# silently alternate between them.
+#
 # What counts as an error is a per-service decision, not a naming detail. Here
 # `failed` and `overloaded` are the node's own fault and page; refusals the
 # caller caused (bad_request, unauthorized, rate_limited, range_too_wide,
@@ -34,3 +42,35 @@ groups:
           sum by (project, service) (rate(node_rpc_requests_total{outcome=~"bad_request|unauthorized|rate_limited|range_too_wide|unknown_method"}[2m]))
             or
           sum by (project, service) (0 * rate(node_rpc_requests_total[2m]))
+
+  # The gateway's own counters, normalised into the same three series, so the
+  # overview and the alerts work on it with no change on their side.
+  #
+  # Same split, drawn where it hurts the gateway: `failed` (it could not reach a
+  # node), `timeout` (it waited and gave up) and `overloaded` (a node said 503)
+  # are its own problem and page. `bad_request`, `unauthorized` and
+  # `rate_limited` are the caller's and never page - a client looping with a
+  # malformed batch must not wake anybody.
+  #
+  # `cancelled` is in neither list on purpose. The client left before the answer
+  # was ready, which is not a failure of the gateway and not a refusal either;
+  # counting it would make every interrupted k6 run look like an outage. It
+  # stays visible in gateway_requests_total, where a rising rate means something
+  # in front of the gateway is giving up on it.
+  - name: red-rpc-gateway
+    interval: 15s
+    rules:
+      - record: service:requests:rate2m
+        expr: sum by (project, service) (rate(gateway_requests_total[2m]))
+
+      - record: service:request_errors:rate2m
+        expr: |
+          sum by (project, service) (rate(gateway_requests_total{outcome=~"failed|timeout|overloaded"}[2m]))
+            or
+          sum by (project, service) (0 * rate(gateway_requests_total[2m]))
+
+      - record: service:client_refusals:rate2m
+        expr: |
+          sum by (project, service) (rate(gateway_requests_total{outcome=~"bad_request|unauthorized|rate_limited"}[2m]))
+            or
+          sum by (project, service) (0 * rate(gateway_requests_total[2m]))
