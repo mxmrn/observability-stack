@@ -1,0 +1,1017 @@
+{
+ "uid": "rpc-gateway",
+ "title": "RPC gateway",
+ "description": "The gateway's own internals: what proxying costs, whether the connection pool works, and which upstream answered. The cross-service view is on Services RED; container resources are on Resources.",
+ "tags": [
+  "rpc-gateway"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 41,
+ "refresh": "10s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "annotations": {
+  "list": [
+   {
+    "name": "Gateway restarts",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus"
+    },
+    "enable": true,
+    "iconColor": "orange",
+    "expr": "changes(process_start_time_seconds{project=\"rpc-gateway\"}[$__interval]) > 0",
+    "step": "30s",
+    "titleFormat": "gateway restarted"
+   },
+   {
+    "name": "OOM kills",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus"
+    },
+    "enable": true,
+    "iconColor": "red",
+    "expr": "increase(container_oom_events_total{project=\"rpc-gateway\",service=\"gateway\"}[$__interval]) > 0",
+    "step": "30s",
+    "titleFormat": "OOM killed"
+   }
+  ]
+ },
+ "panels": [
+  {
+   "type": "timeseries",
+   "title": "What the proxy adds (p99 dots are exemplars: click -> trace)",
+   "description": "The gateway's own latency against the time its upstream call took. Both are native histograms with a 2.2% relative resolution, so the absolute numbers can be trusted: the classic buckets they replaced put p99 inside a 106 ms-wide bucket and reported 151 ms where k6's exact percentile said 127 ms. The gap between the two lines is still not the added latency - quantiles do not subtract - so read the gap as a bound and the panel below it for the difference.",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "gateway p99",
+     "exemplar": true,
+     "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "upstream p99",
+     "exemplar": false,
+     "expr": "histogram_quantile(0.99, sum(rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    },
+    {
+     "refId": "C",
+     "legendFormat": "gateway p50",
+     "exemplar": false,
+     "expr": "histogram_quantile(0.5, sum(rate(gateway_request_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    },
+    {
+     "refId": "D",
+     "legendFormat": "upstream p50",
+     "exemplar": false,
+     "expr": "histogram_quantile(0.5, sum(rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Added latency: the paired difference",
+   "description": "The number this iteration exists to produce, as one series instead of a gap the eye cannot measure: the proxy's own cost is ~0.1 ms against an upstream of ~4.5 ms, which is 0.06% of the height of the panel above.\n\nWhy a paired difference and not two absolute numbers: both histograms share the same bucket layout and see almost the same counts, so the estimation bias is the same on both sides and cancels when subtracted. That is why +0.10 ms reproduced eight scrapes in a row while neither absolute quantile was trustworthy.\n\nReading the lines: p50 is the proxy's steady cost. p99 is still at the edge of what any histogram can resolve, because one sample crossing a bucket boundary up there moves the estimate by about as much as the whole signal - when the p99 line goes negative, that is the arithmetic showing its own error bar, not the gateway finishing before its upstream. For the tail, read a trace.",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "added p50",
+     "expr": "histogram_quantile(0.5, sum(rate(gateway_request_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval]))) - histogram_quantile(0.5, sum(rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "added p99",
+     "expr": "histogram_quantile(0.99, sum(rate(gateway_request_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval]))) - histogram_quantile(0.99, sum(rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "CPU per request",
+   "description": "Container CPU seconds divided by requests. The stand measured one node at 148 us bare and 325 us with tracing and gzip, so the gateway's own share is what this panel is for. It is not a constant: at a larger live heap the Go runtime collects less often per byte allocated, so per-request CPU falls as load rises.\n\nEvery selector here names service=\"gateway\" explicitly. The load generator runs in the same compose project, so project=\"rpc-gateway\" alone sums the service and the thing measuring it: during the first saturation run that reported 1.475 cores against a 1.0 limit - impossible - and a throttled fraction of 0.576 where the service's own was 1.0. Same class of mistake as letting cAdvisor's root cgroup inherit a project label: a selector that quietly includes something that is not the subject.",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "gateway",
+     "expr": "sum(rate(container_cpu_usage_seconds_total{project=\"rpc-gateway\",service=\"gateway\"}[$__rate_interval])) / sum(rate(gateway_requests_total{project=\"rpc-gateway\",service=\"gateway\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "node-1, for scale",
+     "expr": "sum(rate(container_cpu_usage_seconds_total{project=\"stand\",service=\"node-1\"}[$__rate_interval])) / sum(rate(node_rpc_requests_total{project=\"stand\",service=\"node-1\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Answers by outcome",
+   "description": "failed, timeout and overloaded are the gateway's own fault and page. bad_request, unauthorized and rate_limited are the caller's and never do. cancelled is neither: the client left before its answer was ready.",
+   "gridPos": {
+    "x": 8,
+    "y": 8,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "fillOpacity": 40,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{outcome}}",
+     "expr": "sum by (outcome) (rate(gateway_requests_total{project=\"rpc-gateway\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "CPU against the limit, and throttling",
+   "description": "The gateway runs at cpus: 1.0, so RPS per core is a number rather than an impression. Throttling is the honest saturation signal: once the fraction of throttled CFS periods leaves zero, latency grows from the scheduler and not from the service. Memory has its own two panels below, because on this service it is memory that binds first.\n\nEvery selector here names service=\"gateway\" explicitly. The load generator runs in the same compose project, so project=\"rpc-gateway\" alone sums the service and the thing measuring it: during the first saturation run that reported 1.475 cores against a 1.0 limit - impossible - and a throttled fraction of 0.576 where the service's own was 1.0. Same class of mistake as letting cAdvisor's root cgroup inherit a project label: a selector that quietly includes something that is not the subject.",
+   "gridPos": {
+    "x": 16,
+    "y": 8,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "throttled"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       },
+       {
+        "id": "custom.axisPlacement",
+        "value": "right"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "cores used",
+     "expr": "sum(rate(container_cpu_usage_seconds_total{project=\"rpc-gateway\",service=\"gateway\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "limit",
+     "expr": "sum(container_spec_cpu_quota{project=\"rpc-gateway\",service=\"gateway\"} / container_spec_cpu_period{project=\"rpc-gateway\",service=\"gateway\"})"
+    },
+    {
+     "refId": "C",
+     "legendFormat": "throttled",
+     "expr": "sum(rate(container_cpu_cfs_throttled_periods_total{project=\"rpc-gateway\",service=\"gateway\"}[$__rate_interval])) / sum(rate(container_cpu_cfs_periods_total{project=\"rpc-gateway\",service=\"gateway\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Memory against the limit",
+   "description": "The working set is the number the OOM killer compares against the limit, so it is the only one that decides whether this process lives. The other two explain it.\n\nThe goal is where the GC pacer is allowing the heap to grow: at GOGC=100 that is twice the live heap, so a burst that doubles the live set asks for four times the memory it started with, and it asks before the collector has any say. A limit sized for the average therefore dies on a peak - measured here, four OOM kills at 2000 and 3000 RPS with the working set pinned at 255.9 of 256 MB while CPU sat at 0.6 of its 1.0 core. restart: unless-stopped healed it between load steps, so the ladder read as random noise rather than as a service dying four times.\n\nThe second trap is the high-water mark: after a burst the heap is not handed back promptly, and this gateway idled at 221 MB of its 256 with sixteen goroutines - 86% of the limit while doing nothing, leaving the next burst nowhere to grow. Size a memory limit from the peak, never from the average.",
+   "gridPos": {
+    "x": 0,
+    "y": 15,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "working set (what the OOM killer sees)",
+     "expr": "container_memory_working_set_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "limit",
+     "expr": "container_spec_memory_limit_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "C",
+     "legendFormat": "next GC goal (heap allowed to reach)",
+     "expr": "go_gc_heap_goal_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "D",
+     "legendFormat": "live heap",
+     "expr": "go_gc_heap_live_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Where the memory went",
+   "description": "Go's own accounting of what is resident, stacked: live objects, spans the runtime holds but has nothing in, goroutine stacks and runtime metadata. This is the panel that answers why a proxy holding no data needs hundreds of megabytes.\n\nStacks is the one that tracks load rather than data: net/http gives one goroutine per *connection* - not per request - and each starts at 8 KB. Measured: abandoning response bodies without draining them spiked goroutines from 460 to 2481 and stacks from 7.8 to 39.6 MB, a 5x rise on both, while the request rate never changed.\n\nReleased is deliberately NOT in the stack. It is memory the runtime has already handed back to the OS: still mapped into the address space, not resident, and worth exactly zero to the OOM killer. Stacking it with the resident classes was wrong and made a burst that had already passed look like memory in use - in one run it read 192 MB while the container's working set at that moment was 12.7 MB. Read it as a high-water mark instead: this process once needed that much more than it needs now, which is the number a memory limit has to cover.\n\nThe working set line is the reference: Go's resident classes should roughly add up to it, and the remainder is the binary's own pages and anything not allocated through the Go heap.",
+   "gridPos": {
+    "x": 12,
+    "y": 15,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "fillOpacity": 40,
+      "stacking": {
+       "mode": "normal"
+      },
+      "lineWidth": 0
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "working set (resident, what OOM reads)"
+      },
+      "properties": [
+       {
+        "id": "custom.stacking",
+        "value": {
+         "mode": "none"
+        }
+       },
+       {
+        "id": "custom.fillOpacity",
+        "value": 0
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 2
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "released to the OS (not resident)"
+      },
+      "properties": [
+       {
+        "id": "custom.stacking",
+        "value": {
+         "mode": "none"
+        }
+       },
+       {
+        "id": "custom.fillOpacity",
+        "value": 0
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 1
+       },
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          8,
+          4
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "heap: live objects",
+     "expr": "go_memory_classes_heap_objects_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "heap: unused (fragmentation)",
+     "expr": "go_memory_classes_heap_unused_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "C",
+     "legendFormat": "heap: free, not yet released",
+     "expr": "go_memory_classes_heap_free_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "D",
+     "legendFormat": "goroutine stacks",
+     "expr": "go_memory_classes_heap_stacks_bytes{project=\"rpc-gateway\",service=\"gateway\"} + go_memory_classes_os_stacks_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "E",
+     "legendFormat": "runtime metadata",
+     "expr": "go_memory_classes_metadata_mspan_inuse_bytes{project=\"rpc-gateway\",service=\"gateway\"} + go_memory_classes_metadata_mcache_inuse_bytes{project=\"rpc-gateway\",service=\"gateway\"} + go_memory_classes_metadata_other_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "F",
+     "legendFormat": "other (profiling buckets)",
+     "expr": "go_memory_classes_other_bytes{project=\"rpc-gateway\",service=\"gateway\"} + go_memory_classes_profiling_buckets_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "G",
+     "legendFormat": "working set (resident, what OOM reads)",
+     "expr": "container_memory_working_set_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "H",
+     "legendFormat": "released to the OS (not resident)",
+     "expr": "go_memory_classes_heap_released_bytes{project=\"rpc-gateway\",service=\"gateway\"}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Connection pool: handshakes against reuse",
+   "description": "The single panel that proves the pool exists. Warm, the handshake line sits flat at zero and reuse tracks the request rate. Handshakes equal to the request rate mean the pool returns nothing - which happened here once already, from an upstream context cancelled before the response body was read, with latency, status codes and RED all perfectly healthy. At 2000 new connections a second the ephemeral port space (28232 ports, 60s TIME_WAIT, so ~470/s sustainable) is gone in about fifteen seconds.",
+   "gridPos": {
+    "x": 0,
+    "y": 22,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "cps",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{upstream}} handshake",
+     "expr": "sum by (upstream) (rate(gateway_upstream_connections_total{project=\"rpc-gateway\",reused=\"false\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "{{upstream}} reused",
+     "expr": "sum by (upstream) (rate(gateway_upstream_connections_total{project=\"rpc-gateway\",reused=\"true\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Little's law: in flight against seconds of work per second",
+   "description": "in-flight = throughput x latency. The right-hand side collapses to rate(gateway_upstream_duration_seconds_sum): seconds of upstream work accumulated per second of wall clock *is* concurrency, with no multiply needed. The gauge is an instant sample taken at scrape time and the rate is an average over the window, so they agree on the flat and differ on spikes. If they diverge while the load is steady, requests are waiting somewhere that has no graph yet - which is exactly why MaxConnsPerHost is left unlimited: a cap there would queue inside the transport, invisibly.\n\nThe right-hand side is read with histogram_sum() because this is a native histogram: count, sum and buckets live inside one sample, so the _sum, _count and _bucket series a classic histogram would expose do not exist at all. Switching a metric to native buckets silently breaks every query written against those three suffixes - this panel was the one that broke here, and it broke into 'no data' rather than into a wrong number.",
+   "gridPos": {
+    "x": 12,
+    "y": 22,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{upstream}} in flight (gauge)",
+     "expr": "gateway_upstream_inflight_requests{project=\"rpc-gateway\"}"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "{{upstream}} rate x duration",
+     "expr": "sum by (upstream) (histogram_sum(rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Where round-robin sent them",
+   "description": "Round-robin balances requests, not work: a 40-byte eth_chainId and a 350 KB block count the same here. Equal lines on this panel are therefore not evidence of equal load, which is the argument for least-connections in 1.3.",
+   "gridPos": {
+    "x": 0,
+    "y": 30,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{upstream}} {{outcome}}",
+     "expr": "sum by (upstream, outcome) (rate(gateway_upstream_requests_total{project=\"rpc-gateway\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Upstream latency per node",
+   "description": "node-2 fails 5% of its answers into an extra 600 ms on purpose. With round-robin and no health checks that tail is served to one request in sixty, and it is visible here and nowhere else.",
+   "gridPos": {
+    "x": 8,
+    "y": 30,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{upstream}} p99",
+     "expr": "histogram_quantile(0.99, sum by (upstream) (rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "{{upstream}} p50",
+     "expr": "histogram_quantile(0.5, sum by (upstream) (rate(gateway_upstream_duration_seconds{project=\"rpc-gateway\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "The failure this gateway cannot see yet",
+   "description": "How far each upstream is behind the furthest one. node-3 is 20 blocks back, which is about four minutes of chain, and it answers every request successfully with stale data. Round-robin sends it a third of the traffic, so a third of the answers are wrong while every other panel on this dashboard stays green. Head-lag health checks are 1.3.",
+   "gridPos": {
+    "x": 16,
+    "y": 30,
+    "w": 8,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{service}}",
+     "expr": "scalar(max(node_head_block{project=\"stand\"})) - node_head_block{project=\"stand\"}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Goroutines against requests in flight",
+   "description": "net/http gives one goroutine per request, so these two lines should move together with a small constant offset. Goroutines climbing while in-flight stays flat is a leak, and the usual cause in a proxy is a response body that was never drained: the goroutine reading that connection has nowhere to finish.\n\nEvery selector here names service=\"gateway\" explicitly. The load generator runs in the same compose project, so project=\"rpc-gateway\" alone sums the service and the thing measuring it: during the first saturation run that reported 1.475 cores against a 1.0 limit - impossible - and a throttled fraction of 0.576 where the service's own was 1.0. Same class of mistake as letting cAdvisor's root cgroup inherit a project label: a selector that quietly includes something that is not the subject.",
+   "gridPos": {
+    "x": 0,
+    "y": 37,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "goroutines",
+     "expr": "go_goroutines{project=\"rpc-gateway\",service=\"gateway\"}"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "requests in flight",
+     "expr": "gateway_inflight_requests{project=\"rpc-gateway\"}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Bytes on the wire, and calls per request",
+   "description": "Response bytes as they left the socket - the gateway forwards the body compressed, so this is wire bytes and not JSON bytes. The node measured 5.24x on this mix, which was worth ~$6075/month of egress for ~$4.3/month of CPU. Calls per request is on the right axis: a batch is one proxied request and many calls.",
+   "gridPos": {
+    "x": 12,
+    "y": 37,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "calls per request"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "custom.axisPlacement",
+        "value": "right"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{method}}",
+     "expr": "sum by (method) (rate(gateway_response_bytes_total{project=\"rpc-gateway\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "calls per request",
+     "expr": "sum(rate(gateway_batch_size_sum{project=\"rpc-gateway\"}[$__rate_interval])) / sum(rate(gateway_batch_size_count{project=\"rpc-gateway\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Load generator: offered against completed",
+   "description": "Where the knee is. Below it the completed rate follows the offered rate and latency is flat; above it throughput stops rising while latency climbs without limit, because a queue is growing. dropped_iterations is the honest line: anything above zero means the generator itself could not keep up, and the run describes the laptop rather than the gateway. The dropped line has no series until something is actually dropped: k6 pushes the counter only once it moves, and a push source cannot be pre-created the way this gateway's own counters are. Its appearance is the signal, and it cannot be confused with a dead source here because the other two lines on this panel come from the same producer.",
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "completed, {{target}}",
+     "expr": "sum by (target) (rate(k6_http_reqs_total{project=\"rpc-gateway\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "dropped iterations",
+     "expr": "sum(rate(k6_dropped_iterations_total{project=\"rpc-gateway\"}[$__rate_interval]))"
+    },
+    {
+     "refId": "C",
+     "legendFormat": "virtual users",
+     "expr": "max(k6_vus{project=\"rpc-gateway\"})"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Load generator: latency as the client sees it",
+   "description": "The client's own view, which includes the network and the generator's scheduling, so it is always above the gateway's own histogram. k6 reports these in milliseconds while every Prometheus histogram here is in seconds - mixing the two on one axis is how a run gets declared a thousand times faster than it was. `target` separates the baseline run straight at a node from the run through the gateway.",
+   "gridPos": {
+    "x": 12,
+    "y": 44,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "custom": {
+      "fillOpacity": 10
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "legendFormat": "{{target}} {{name}} p99",
+     "expr": "max by (target, name) (k6_http_req_duration_p99{project=\"rpc-gateway\"})"
+    },
+    {
+     "refId": "B",
+     "legendFormat": "{{target}} p50",
+     "expr": "max by (target) (k6_http_req_duration_p50{project=\"rpc-gateway\"})"
+    }
+   ]
+  },
+  {
+   "type": "logs",
+   "title": "Warnings and errors (expand a line -> Open trace)",
+   "description": "Every line carries trace_id, so a 502 here opens the trace that produced it. The upstream's address and the transport error live in the log and never in the client's response.",
+   "gridPos": {
+    "x": 0,
+    "y": 51,
+    "w": 24,
+    "h": 9
+   },
+   "datasource": {
+    "type": "loki",
+    "uid": "loki"
+   },
+   "options": {
+    "showTime": true,
+    "wrapLogMessage": true,
+    "sortOrder": "Descending"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "{project=\"rpc-gateway\"} | json | level=~\"WARN|ERROR\""
+    }
+   ]
+  }
+ ]
+}
