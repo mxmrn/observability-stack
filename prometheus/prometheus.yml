@@ -1,6 +1,36 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Native histograms travel only in the protobuf exposition format: neither
+  # OpenMetrics text 1.0 nor the old text format can carry them. The default
+  # list here holds only the two text formats, so a service exposing native
+  # buckets would have them silently dropped at scrape time and the only symptom
+  # would be a quantile that is still coarse.
+  #
+  # Protobuf is listed first and the text formats stay as fallbacks: the Accept
+  # header offers all three and each target picks what it can serve, so
+  # cadvisor, node-exporter and anything else that never heard of protobuf keep
+  # working unchanged. Exemplars survive too - protobuf carried them before
+  # OpenMetrics existed.
+  #
+  # When a metric exposes both classic and native buckets, Prometheus keeps the
+  # native one and drops the classic series. That is deliberate here: the
+  # classic buckets stay in the code so that `curl /metrics` is still readable
+  # by a human, while the stored series is the one worth querying.
+  # always_scrape_classic_histograms: true would keep both, at the cost of
+  # paying the classic cardinality bill we are trying to get rid of.
+  scrape_protocols:
+    - PrometheusProto
+    - OpenMetricsText1.0.0
+    - PrometheusText0.0.4
+  # The second gate, and just as quiet as the first. Negotiating protobuf is not
+  # enough: native buckets that arrive are still discarded unless this is on. It
+  # used to be switched on by --enable-feature=native-histograms, which no longer
+  # exists in Prometheus 3.14, so it has to be said here. With protobuf
+  # negotiated and this left at its default false, /metrics serves native
+  # buckets, Prometheus reads them, and stores nothing - and the only symptom is
+  # that the quantiles stay as coarse as they were.
+  scrape_native_histograms: true
 
 rule_files:
   - /etc/prometheus/rules/*.yml
