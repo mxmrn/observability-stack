@@ -32,6 +32,30 @@ global:
   # that the quantiles stay as coarse as they were.
   scrape_native_histograms: true
 
+  # Per-target limits, because this TSDB is shared. Without them one service's
+  # mistake is an outage for every other project: a single label taking a
+  # client-supplied address grew one target from 290 samples per scrape to
+  # 32576, pushed the head from 10161 series to 45674, took Prometheus to 342 MB
+  # and stretched that target's scrape from 3.5 ms to 300 ms. Nothing refused
+  # it, and every dashboard in the stack got slower.
+  #
+  # With a limit, the same mistake fails that one scrape instead: `up` goes to
+  # 0, the alert that already exists fires, and the scrape error names the
+  # reason. The cost is losing that target's metrics entirely while it is broken,
+  # including the RED series needed to diagnose it - which for a shared stack is
+  # the better half of the trade. Fail locally and loudly rather than globally
+  # and quietly.
+  #
+  # 10000 is 2.6x the largest honest target here (grafana, 3836) and 3.3x below
+  # what the incident produced. The others are belts: an address is 42
+  # characters and a hash 66, so nothing legitimate needs 256; and a /metrics
+  # body of 8 MB is already far past anything in this stack.
+  sample_limit: 10000
+  label_limit: 30
+  label_name_length_limit: 128
+  label_value_length_limit: 256
+  body_size_limit: 8MB
+
 rule_files:
   - /etc/prometheus/rules/*.yml
 
