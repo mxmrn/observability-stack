@@ -58,3 +58,135 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.project }}/{{ $labels.service }}: {{ $value | humanizePercentage }} of requests failed on the service side"
+
+  # The Go runtime's memory budget. Every threshold here was measured on the
+  # rpc-gateway in iteration 1.2, where two failures were reproduced on purpose:
+  # a heap with no budget at all (GOGC=off, no GOMEMLIMIT -> OOMKill in 14 s)
+  # and a budget below what the service needs (GOMEMLIMIT=24MiB -> the GC
+  # spiral). Neither was caught by anything that already existed: the process
+  # stayed up, /healthz kept answering 200, memory stayed under the container
+  # limit, and up stayed 1.
+  - name: go-runtime
+    rules:
+      # The direct signature of a budget that cannot be met. The heap goal is
+      # the smaller of two: live x (1 + GOGC/100), and (GOMEMLIMIT - non-heap)
+      # x 0.97. When the second one lands at or below the live heap the runtime
+      # clamps it to the live heap itself, which means "collect now, always" -
+      # measured at 36-53 cycles per second, 62.7% of CPU, p50 up from 7.4 ms
+      # to 2.18 s.
+      #
+      # for: 1m and not longer, deliberately. Once the GC CPU limiter gives up
+      # and lets the heap exceed the limit, the memory-limit goal stops being
+      # the minimum and the GOGC one takes over - the ratio jumps back to ~2.0
+      # and this alert goes quiet while the incident continues. Measured both
+      # ways on the same configuration: 108 of 108 samples at 1.00 in one run,
+      # and 1.00 for 30 s then 2.15 for the rest in another. It is a reliable
+      # onset signal and an unreliable steady-state one, hence the companions
+      # below.
+      - alert: GoGCCannotMeetMemoryLimit
+        expr: |
+          go_gc_heap_goal_bytes / go_gc_heap_live_bytes < 1.2
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: heap goal pinned to the live heap - GOMEMLIMIT is below what this service needs"
+
+      # Mark assist is collector work billed to the application's own
+      # goroutines: a goroutine that allocates while marking is on must mark a
+      # proportional amount before it is allowed to allocate. A healthy process
+      # barely assists, because the dedicated workers keep up. Measured 1.4% on
+      # this service under a tight but survivable limit, against 19-32% in the
+      # spiral, so 5% separates them by a wide margin.
+      #
+      # This one has no blind spot: it is a direct measure of the application
+      # paying for collection, and it stays high for as long as that is true.
+      #
+      # The > 0.1 on the denominator is not cosmetic. Without it this rule has
+      # the same defect it is meant to catch a symptom of: a share whose
+      # denominator has gone away. On an idle process CPU used is 0.0035 cores,
+      # and the first version of this rule reported an assist share of 8.21 -
+      # over 100%, which is arithmetically impossible and happens because
+      # rate() resolves a counter reset independently for each of the three
+      # series. One tenth of a core is far above idle and far below any real
+      # load on this service: the spiral ran at 2.0 cores, a healthy run at 0.8.
+      - alert: GoMarkAssistStealingFromHandlers
+        expr: |
+          sum by (project, service) (rate(go_cpu_classes_gc_mark_assist_cpu_seconds_total[2m]))
+            / ((
+              sum by (project, service) (rate(go_cpu_classes_total_cpu_seconds_total[2m]))
+                - sum by (project, service) (rate(go_cpu_classes_idle_cpu_seconds_total[2m]))
+              ) > 0.1) > 0.05
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: {{ $value | humanizePercentage }} of CPU is mark assist - the collector is taking it from the handlers"
+
+      # The runtime over its own declared budget. GOMEMLIMIT is soft: the
+      # runtime does not refuse an allocation, and the GC CPU limiter will
+      # exceed the limit rather than spend more than half the CPU collecting.
+      # So this firing means the limiter has already given up, which is exactly
+      # the window where GoGCCannotMeetMemoryLimit goes quiet. Measured at
+      # 165 MB mapped against a 24 MiB limit - 6.6x over.
+      #
+      # The > 9e18 guard drops processes with no limit set: GOMEMLIMIT unset is
+      # reported as 2^63, not as zero or absent.
+      - alert: GoRuntimeOverItsMemoryLimit
+        expr: |
+          go_memory_classes_total_bytes
+            > (go_gc_gomemlimit_bytes < 9e18)
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: runtime mapped {{ $value | humanize1024 }}B, past its own GOMEMLIMIT"
+
+      # Nothing bounds the heap at all. This is a configuration mistake, not a
+      # load problem, so it fires from the first scrape and needs no traffic to
+      # be true: GOGC=off disables the ratio-based goal and an unset GOMEMLIMIT
+      # leaves the absolute one at infinity, so the only remaining brake is the
+      # cgroup - and the cgroup's way of saying no is SIGKILL. Measured: 48 MB/s
+      # of heap growth at 1500 RPS, dead in 14 seconds, exit 137, and not one
+      # line about it in the process's own log, because SIGKILL cannot be
+      # handled.
+      #
+      # Both sentinels are "off" rendered as unsigned: GOGC=off reads 2^64 and
+      # an unset GOMEMLIMIT reads 2^63.
+      - alert: GoGCDisabledWithNoMemoryLimit
+        expr: |
+          go_gc_gogc_percent > 9e18 and go_gc_gomemlimit_bytes > 9e18
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: GOGC=off with no GOMEMLIMIT - the heap has no budget and only the OOM killer will stop it"
+
+  # Two measurements of one event, one on each end of the wire. Only possible
+  # because this stand owns both ends; in production the dependency's own
+  # numbers are usually someone else's.
+  #
+  # A client-side latency metric cannot separate "the other end was slow" from
+  # "I was too busy to read the reply": it is wall time held by a goroutine that
+  # also has to serve the rest of the request. During the GC spiral the gateway
+  # reported 2.1-2.3 s at p99 for all three upstreams while the nodes reported
+  # 110, 635 and 110 ms for the same calls, and logged "upstream timed out"
+  # naming node-2 and node-3. The uniformity across three independent
+  # dependencies is the tell: real upstream trouble is not identical on all of
+  # them at once.
+  #
+  # Healthy, measured: 0.89, 0.97, 1.01 - the two ends agree within about 10%,
+  # the difference being the network plus the gateway's own overhead. Spiral:
+  # 25.4, 5.0, 29.5. A factor of 3 sits in empty space between them.
+  - name: rpc-gateway-cross-check
+    rules:
+      - alert: UpstreamLatencyDisagreesWithUpstream
+        expr: |
+          histogram_quantile(0.99,
+            sum by (upstream) (rate(gateway_upstream_duration_seconds{project="rpc-gateway",service="gateway"}[2m])))
+          / on (upstream)
+          label_replace(
+            histogram_quantile(0.99,
+              sum by (service, le) (rate(node_rpc_duration_seconds_bucket{project="stand"}[2m]))),
+            "upstream", "$1", "service", "(.*)")
+          > 3
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "gateway measures {{ $labels.upstream }} {{ $value | humanize }}x slower than the node measures itself - suspect the gateway, not the upstream"
