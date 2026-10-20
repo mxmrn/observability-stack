@@ -190,3 +190,45 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "gateway measures {{ $labels.upstream }} {{ $value | humanize }}x slower than the node measures itself - suspect the gateway, not the upstream"
+
+  # The scheduler against the CPU quota. A cgroup quota is a budget of CPU time
+  # per period, not a number of cores, and the rate it drains at is the number
+  # of threads running: measured on the gateway at a 1.0-core limit, GOMAXPROCS=2
+  # spends the 100 ms budget over about 50 ms of wall time and GOMAXPROCS=12 over
+  # about 8 ms, after which every thread in the cgroup is frozen until the period
+  # ends. Same CPU used either way - 0.998 against 1.001 cores - and 62x the
+  # frozen thread-time, because the freeze is longer and applies to more threads.
+  # At 3000 RPS that was p50 6.4 ms against 460.55 ms and 2980 against 517 RPS.
+  #
+  # The threshold is what Go itself derives, max(2, ceil(limit)), measured:
+  # a 0.1, 0.25, 0.5 or 1.0-core limit all give 2, and 2.5 gives 3. So the
+  # default is already above the quota for any container under two cores, on
+  # purpose - one P has no concurrency at all - and this rule fires only above
+  # that, which means somebody set it by hand or the binary cannot see its own
+  # limit.
+  #
+  # Only where a quota exists. With requests and no limits there is no cpu.max
+  # at all, only a weight, so there is nothing to exhaust and no freeze: a high
+  # GOMAXPROCS is then correct, and Go derives NumCPU for exactly that case.
+  #
+  # cadvisor is excluded by name. It runs 12 against a 0.5-core limit for two
+  # stacked reasons - the host's /sys mounted over its own, so the runtime sees
+  # no limit, and then the binary setting the value itself and ignoring the
+  # environment variable, which was tried - and it is latent rather than live at
+  # 0.0049 of its 0.5 cores with no throttled periods. The exclusion is here
+  # rather than in the dashboard because an alert that always fires is an alert
+  # nobody reads; the reasoning is in observability/compose.yml next to the
+  # service.
+  - name: scheduler-against-quota
+    rules:
+      - alert: GoMaxProcsAboveCPUQuota
+        expr: |
+          max by (project, service) (go_sched_gomaxprocs_threads{service!="cadvisor"})
+            > on (project, service)
+          clamp_min(
+            ceil(max by (project, service) ((container_spec_cpu_quota > 0) / container_spec_cpu_period)),
+            2)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.project }}/{{ $labels.service }}: GOMAXPROCS is {{ $value }}, above what its CPU quota can feed - the quota drains in a fraction of each period and the rest of it is frozen"

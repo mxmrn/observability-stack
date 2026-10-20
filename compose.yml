@@ -156,6 +156,19 @@ services:
     <<: *common
     image: ghcr.io/google/cadvisor:v0.60.5
     privileged: true
+    # Runs GOMAXPROCS=12 inside a 0.5-core limit, and it cannot be fixed from
+    # here. Two reasons stack up: `/sys:/sys:ro` below mounts the host's cgroup
+    # tree over its own, so the Go runtime reads the root of that tree, finds no
+    # limit and falls back to the host's CPU count - container awareness
+    # defeated by a volume mount rather than by the Go version - and the binary
+    # then sets the value itself, ignoring GOMAXPROCS in the environment, which
+    # was tried and measured (still 12 on a 68-second-old process).
+    #
+    # Left as it is because it is latent rather than live: measured at 0.0049 of
+    # its 0.5 cores with zero throttled periods. It is excluded by name in
+    # GoMaxProcsAboveCPUQuota, since an alert that always fires is an alert
+    # nobody reads. Removing the mount is not an option - reading the host's
+    # /sys is the job.
     command:
       - --docker_only=true
       - --housekeeping_interval=10s
